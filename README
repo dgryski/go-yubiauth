@@ -1,0 +1,7 @@
+Yubikey Authorization Server
+----------------------------
+
+This is an (currently incomplete) implementation of a Yubikey authorization stack in Go.
+
+- vald: A validation server
+- ksmd: A key storage module

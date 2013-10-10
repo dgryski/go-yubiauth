@@ -1,0 +1,1 @@
+insert into yubikeys (serialnr, publicname, created, internalname, aeskey, lockcode, creator, active, hardware) values (1, "dteffuje", "Sun, 06 Oct 2013 21:47:50 GMT", "8792ebfe26cc", "ecde18dbe76fbd0c33330f1c354871db", "111111", "dgryski", 1, 1);
