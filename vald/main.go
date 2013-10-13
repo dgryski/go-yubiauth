@@ -86,8 +86,6 @@ type VerifyRequest struct {
 type VerifyResponse struct {
 	OTP            string
 	Nonce          string
-	H              []byte
-	T              time.Time // timestamp in that obnoxious format
 	Status         Status
 	Timestamp      uint
 	SessionCounter uint
