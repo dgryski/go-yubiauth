@@ -151,15 +151,6 @@ func isValidRequestSignature(form url.Values, key []byte) bool {
 	return hmac.Equal(clientSig, serverSig)
 }
 
-var requiredRequestParams = []string{"id", "otp", "nonce"}
-
-var optionalRequestParams = map[string]bool{
-	"h":         false,
-	"timestamp": false,
-	"sl":        false,
-	"timeout":   false,
-}
-
 func (v *VerifyResponse) toMap(key []byte) map[string]string {
 
 	m := make(map[string]string)
