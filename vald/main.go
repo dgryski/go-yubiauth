@@ -196,7 +196,6 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	r.ParseForm()
 
-	// FIXME: check for required params
 	clientIDstr := r.FormValue("id")
 	otp := r.FormValue("otp")
 	nonce := r.FormValue("nonce")
