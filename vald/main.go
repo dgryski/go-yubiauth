@@ -89,7 +89,7 @@ type VerifyResponse struct {
 	H              []byte
 	T              time.Time // timestamp in that obnoxious format
 	Status         Status
-	Timestamp      string
+	Timestamp      uint
 	SessionCounter uint
 	SessionUse     uint
 	SL             int
@@ -175,7 +175,8 @@ func (v *VerifyResponse) toMap(key []byte) map[string]string {
 	milli := now.Format(".000")
 	m["t"] = ts + milli[1:]
 
-	if v.SessionUse != 0 || v.SessionCounter != 0 {
+	if v.Timestamp != 0 || v.SessionUse != 0 || v.SessionCounter != 0 {
+		m["timestamp"] = strconv.FormatUint(uint64(v.Timestamp), 10)
 		m["sessionuse"] = strconv.FormatUint(uint64(v.SessionUse), 10)
 		m["sessioncounter"] = strconv.FormatUint(uint64(v.SessionCounter), 10)
 	}
@@ -350,12 +351,17 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	//   Val X construct validation response. Validation is successful if the Verification Algorithm below is successful.
 	response := &VerifyResponse{
-		OTP:            otp,
-		Nonce:          nonce,
-		SessionCounter: uint(ksmResponse.Counter),
-		SessionUse:     uint(ksmResponse.Use),
-		Status:         OK,
+		OTP:    otp,
+		Nonce:  nonce,
+		Status: OK,
 	}
+
+	if form.Get("timestamp") == "1" {
+		response.SessionCounter = uint(ksmResponse.Counter)
+		response.SessionUse = uint(ksmResponse.Use)
+		response.Timestamp = uint(ksmResponse.TstampHigh)<<16 + uint(ksmResponse.TstampLow)
+	}
+
 	writeResponse(w, response, keyBytes, nil)
 
 	/*
