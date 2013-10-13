@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"github.com/conformal/yubikey"
 	"github.com/dgryski/go-yubiauth/ksmclient"
+	"github.com/dgryski/go-yubiauth/vald/yubidb"
 	_ "github.com/mattn/go-sqlite3"
 	"log"
 	"net/http"
@@ -80,15 +81,6 @@ type VerifyResponse struct {
 	SessionCounter uint
 	SessionUse     uint
 	SL             int
-}
-
-// A row(ish) from the database
-type OTPRequest struct {
-	Counter int
-	Use     int
-	Low     int
-	High    int
-	Nonce   string
 }
 
 const ksmEndpoint = "http://localhost:8081/wsapi/decrypt"
@@ -209,30 +201,20 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// FIXME: check they didn't pass any unknown parameters
-	// FIXME: parse request into VerifyRequest?
-
 	// Val X parses validation request, retrieves the client key for the client id from local database and checks the request signature.
-	stmt, err := YubiDB.Prepare("SELECT secret FROM clients WHERE id = ? AND active = 1")
-	if err != nil {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, nil, err)
-		return
-	}
-	defer stmt.Close()
-	var clientSecret string
-	err = stmt.QueryRow(clientID).Scan(&clientSecret)
-	if err != nil {
+	var client yubidb.Client
+	if err := client.Load(YubiDB, int(clientID)); err != nil {
 		if err == sql.ErrNoRows {
 			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: NO_SUCH_CLIENT}, nil, nil)
 		} else {
-			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, nil, err)
+			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, nil, fmt.Errorf("db error client load: %s", err))
 		}
 		return
 	}
 
 	form := r.Form
 
-	keyBytes, _ := base64.StdEncoding.DecodeString(clientSecret)
+	keyBytes, _ := base64.StdEncoding.DecodeString(client.Secret)
 
 	// if they provided a hash, it has to verify
 	if len(r.FormValue("h")) > 0 && !isValidRequestSignature(form, keyBytes) {
@@ -253,62 +235,57 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	publicNameLen := len(otp) - 32
 	publicName := otp[:publicNameLen]
 
-	stmt, err = YubiDB.Prepare("SELECT yk_counter, yk_use, yk_low, yk_high, nonce FROM yubikeys WHERE yk_publicname = ? AND active = 1")
-	if err != nil {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes, fmt.Errorf("PREPARE SELECT failed: %s", err))
-		return
-	}
-	defer stmt.Close()
-	var lastOTP OTPRequest
-	err = stmt.QueryRow(publicName).Scan(&lastOTP.Counter, &lastOTP.Use, &lastOTP.Low, &lastOTP.High, &lastOTP.Nonce)
-	var newClient bool
-	if err != nil {
-		if err != sql.ErrNoRows {
+	var ykey yubidb.Yubikey
+
+	err = ykey.Load(YubiDB, publicName)
+	if err == sql.ErrNoRows {
+		ykey.Active = true
+		ykey.PublicName = publicName
+		ykey.Counter = -1
+		ykey.Use = -1
+		ykey.Low = -1
+		ykey.High = -1
+		ykey.Nonce = nonce
+		if err := ykey.Insert(YubiDB); err != nil {
 			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes, err)
 			return
 		}
-		newClient = true
+
+	} else if err != nil {
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes, err)
+		return
 	}
 
-	// we need to add client with counter/use/low/high=-1
-	if newClient {
-		stmt, err := YubiDB.Prepare("INSERT INTO yubikeys(active, created, modified, yk_publicname, yk_counter, yk_use, yk_low, yk_high) VALUES(1, ?, ?, ?, -1, -1, -1, -1)")
-		if err != nil {
-			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes, fmt.Errorf("PREPARE INSERT failed: %s", err))
-			return
-		}
-		epoch := time.Now().Unix()
-		_, err = stmt.Exec(epoch, epoch, publicName)
-		if err != nil {
-			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes, fmt.Errorf("INSERT failed: %s", err))
-			return
-		}
+	if !ykey.Active {
+		// actually 'deactivated', but don't let the user know
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BAD_OTP}, keyBytes, fmt.Errorf("yubikey not active"))
+		return
 	}
 
 	// Val X checks the OTP/Nonce against local database, and replies with REPLAYED_REQUEST if local information is identical.
-	if int(ksmResponse.TstampHigh) == lastOTP.High && int(ksmResponse.TstampLow) == lastOTP.Low &&
-		int(ksmResponse.Counter) == lastOTP.Counter && int(ksmResponse.Use) == lastOTP.Use && nonce == lastOTP.Nonce {
+	if int(ksmResponse.TstampHigh) == ykey.High && int(ksmResponse.TstampLow) == ykey.Low &&
+		int(ksmResponse.Counter) == ykey.Counter && int(ksmResponse.Use) == ykey.Use && nonce == ykey.Nonce {
 		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: REPLAYED_REQUEST}, keyBytes, nil)
 		return
 	}
 
 	// Val X checks the OTP counters against local counters, and rejects OTP as replayed if local counters are higher than or equal to OTP counters.
-	if int(ksmResponse.TstampHigh) < lastOTP.High ||
-		int(ksmResponse.TstampHigh) == lastOTP.High && int(ksmResponse.TstampLow) <= lastOTP.Low ||
-		int(ksmResponse.Counter) < lastOTP.Counter ||
-		int(ksmResponse.Counter) == lastOTP.Counter && int(ksmResponse.Use) <= lastOTP.Use {
+	if int(ksmResponse.TstampHigh) < ykey.High ||
+		int(ksmResponse.TstampHigh) == ykey.High && int(ksmResponse.TstampLow) <= ykey.Low ||
+		int(ksmResponse.Counter) < ykey.Counter ||
+		int(ksmResponse.Counter) == ykey.Counter && int(ksmResponse.Use) <= ykey.Use {
 		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: REPLAYED_OTP}, keyBytes, nil)
 		return
 	}
 
 	// Val X updates the internal database with counters/nonce from request.
-	stmt, err = YubiDB.Prepare("UPDATE yubikeys SET yk_counter=?, yk_use=?, yk_low=?, yk_high=?, nonce=? where yk_publicname=?")
-	if err != nil {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes, fmt.Errorf("PREPARE UPDATE failed: %s", err))
-		return
-	}
-	_, err = stmt.Exec(ksmResponse.Counter, ksmResponse.Use, ksmResponse.TstampLow, ksmResponse.TstampHigh, nonce, publicName)
-	if err != nil {
+	ykey.Counter = int(ksmResponse.Counter)
+	ykey.Use = int(ksmResponse.Use)
+	ykey.Low = int(ksmResponse.TstampLow)
+	ykey.High = int(ksmResponse.TstampHigh)
+	ykey.Nonce = nonce
+
+	if err := ykey.UpdateCounters(YubiDB); err != nil {
 		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes, fmt.Errorf("UPDATE failed: %s", err))
 		return
 	}
