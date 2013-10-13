@@ -265,17 +265,13 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Val X checks the OTP/Nonce against local database, and replies with REPLAYED_REQUEST if local information is identical.
-	if int(ksmResponse.TstampHigh) == ykey.High && int(ksmResponse.TstampLow) == ykey.Low &&
-		int(ksmResponse.Counter) == ykey.Counter && int(ksmResponse.Use) == ykey.Use && nonce == ykey.Nonce {
+	if int(ksmResponse.Counter) == ykey.Counter && int(ksmResponse.Use) == ykey.Use && nonce == ykey.Nonce {
 		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: REPLAYED_REQUEST}, keyBytes, nil)
 		return
 	}
 
 	// Val X checks the OTP counters against local counters, and rejects OTP as replayed if local counters are higher than or equal to OTP counters.
-	if int(ksmResponse.TstampHigh) < ykey.High ||
-		int(ksmResponse.TstampHigh) == ykey.High && int(ksmResponse.TstampLow) <= ykey.Low ||
-		int(ksmResponse.Counter) < ykey.Counter ||
-		int(ksmResponse.Counter) == ykey.Counter && int(ksmResponse.Use) <= ykey.Use {
+	if int(ksmResponse.Counter) < ykey.Counter || int(ksmResponse.Counter) == ykey.Counter && int(ksmResponse.Use) <= ykey.Use {
 		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: REPLAYED_OTP}, keyBytes, nil)
 		return
 	}
