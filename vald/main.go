@@ -227,8 +227,10 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	ksmResponse, err := ksmClient.Decrypt(otp)
 	if err != nil {
-		// FIXME: need to check here for "Unknown Yubikey" ->
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes, err)
+		// We don't differentiate between a problem with the OTP (unknown,
+		// corrupt) and a problem with the KSM itself (down, db error)
+		// The PHP version assumes the KSM is fine and the OTP is broken, so that's what we do too.
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BAD_OTP}, keyBytes, err)
 		return
 	}
 
