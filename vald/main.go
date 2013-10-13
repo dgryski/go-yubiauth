@@ -213,7 +213,7 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	var clientID uint64
 	var err error
 	if clientID, err = strconv.ParseUint(clientIDstr, 10, 64); err != nil {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil, err)
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil, fmt.Errorf("bad clientIdstr: %s -> %s\n", clientIDstr, err))
 		return
 	}
 
