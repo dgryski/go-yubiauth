@@ -10,12 +10,14 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
+	"github.com/conformal/yubikey"
 	"github.com/dgryski/go-yubiauth/ksmclient"
 	_ "github.com/mattn/go-sqlite3"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"time"
@@ -196,17 +198,36 @@ func writeResponse(w http.ResponseWriter, resp *VerifyResponse, key []byte, err 
 	}
 }
 
+var nonceRegex = regexp.MustCompile("^[A-Za-z0-9]{16,40}$")
+
 func verifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	r.ParseForm()
 
 	// FIXME: check for required params
-	clientID := r.FormValue("id")
+	clientIDstr := r.FormValue("id")
 	otp := r.FormValue("otp")
 	nonce := r.FormValue("nonce")
 
-	if clientID == "" || otp == "" || nonce == "" {
+	if clientIDstr == "" || otp == "" || nonce == "" {
 		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil, nil)
+		return
+	}
+
+	if len(otp) < 32 || len(otp) > 48 || !yubikey.ModHexP([]byte(otp)) {
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BAD_OTP}, nil, fmt.Errorf("bad otp: %s", otp))
+		return
+	}
+
+	var clientID uint64
+	var err error
+	if clientID, err = strconv.ParseUint(clientIDstr, 10, 64); err != nil {
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil, err)
+		return
+	}
+
+	if !nonceRegex.MatchString(nonce) {
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil, fmt.Errorf("bad nonce: %s", nonce))
 		return
 	}
 
