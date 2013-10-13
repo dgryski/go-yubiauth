@@ -71,17 +71,6 @@ func statusFromString(status string) Status {
 	return UNKNOWN_STATUS
 }
 
-// VerifyRequest is the request from the user, parsed into bits
-type VerifyRequest struct {
-	ID        string
-	OTP       string
-	H         string
-	Timestamp bool
-	Nonce     string
-	SL        string
-	Timeout   int
-}
-
 // VerifyResponse is the response we send back
 type VerifyResponse struct {
 	OTP            string
