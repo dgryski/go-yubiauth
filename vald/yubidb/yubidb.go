@@ -64,10 +64,11 @@ func (y *Yubikey) Insert(ydb *sql.DB) error {
 }
 
 func (y *Yubikey) UpdateCounters(ydb *sql.DB) error {
-	stmt, err := ydb.Prepare("UPDATE yubikeys SET yk_counter=?, yk_use=?, yk_low=?, yk_high=?, nonce=? where yk_publicname=?")
+	stmt, err := ydb.Prepare("UPDATE yubikeys SET yk_counter=?, yk_use=?, yk_low=?, yk_high=?, nonce=?, modified=? where yk_publicname=?")
 	if err != nil {
 		return err
 	}
-	_, err = stmt.Exec(y.Counter, y.Use, y.Low, y.High, y.Nonce, y.PublicName)
+	y.Modified = time.Now().Unix()
+	_, err = stmt.Exec(y.Counter, y.Use, y.Low, y.High, y.Nonce, y.Modified, y.PublicName)
 	return err
 }
