@@ -13,8 +13,8 @@ import (
 	"github.com/conformal/yubikey"
 	"github.com/dgryski/go-yubiauth/ksmclient"
 	"github.com/dgryski/go-yubiauth/vald/yubidb"
+	"github.com/golang/glog"
 	_ "github.com/mattn/go-sqlite3"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -157,15 +157,11 @@ func (v *VerifyResponse) toMap(key []byte) map[string]string {
 	return m
 }
 
-func writeResponse(w http.ResponseWriter, resp *VerifyResponse, key []byte, err error) {
+func writeResponse(w http.ResponseWriter, resp *VerifyResponse, key []byte) {
 	u := resp.toMap(key)
 
 	for k, v := range u {
 		fmt.Fprintf(w, "%s=%s\n", k, v)
-	}
-
-	if err != nil {
-		log.Println("err=", err)
 	}
 }
 
@@ -179,35 +175,55 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	otp := r.FormValue("otp")
 	nonce := r.FormValue("nonce")
 
-	if clientIDstr == "" || otp == "" || nonce == "" {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil, nil)
-		return
-	}
-
-	if len(otp) < 32 || len(otp) > 48 || !yubikey.ModHexP([]byte(otp)) {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BAD_OTP}, nil, fmt.Errorf("bad otp: %s", otp))
-		return
+	if clientIDstr == "" {
+		glog.Info("ClientID is missing")
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil)
 	}
 
 	var clientID uint64
 	var err error
 	if clientID, err = strconv.ParseUint(clientIDstr, 10, 64); err != nil {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil, fmt.Errorf("bad clientIdstr: %s -> %s\n", clientIDstr, err))
+		glog.Info("ClientID must be an integer: ", clientIDstr)
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil)
 		return
 	}
 
-	if !nonceRegex.MatchString(nonce) {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil, fmt.Errorf("bad nonce: %s", nonce))
+	if otp == "" {
+		glog.Info("OTP is missing")
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil)
 		return
 	}
+
+	// FIXME: perform dvorak conversion?
+	if len(otp) < 32 || len(otp) > 48 || !yubikey.ModHexP([]byte(otp)) {
+		glog.Info("Invalid OTP: ", otp)
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BAD_OTP}, nil)
+		return
+	}
+
+	if nonce == "" {
+		glog.Info("Nonce is missing")
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil)
+	}
+
+	if !nonceRegex.MatchString(nonce) {
+		glog.Info("Nonce is provided but not correct: ", nonce)
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: MISSING_PARAMETER}, nil)
+		return
+	}
+
+	// FIXME: check timeout
+	// FIXME: check sl
 
 	// Val X parses validation request, retrieves the client key for the client id from local database and checks the request signature.
 	var client yubidb.Client
 	if err := client.Load(YubiDB, int(clientID)); err != nil {
 		if err == sql.ErrNoRows {
-			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: NO_SUCH_CLIENT}, nil, nil)
+			glog.Info("Invalid client ID: ", clientID)
+			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: NO_SUCH_CLIENT}, nil)
 		} else {
-			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, nil, fmt.Errorf("db error client load: %s", err))
+			glog.Errorf("DB error loading clientID=%d: %s", clientID, err)
+			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, nil)
 		}
 		return
 	}
@@ -218,7 +234,8 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	// if they provided a hash, it has to verify
 	if len(r.FormValue("h")) > 0 && !isValidRequestSignature(form, keyBytes) {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BAD_SIGNATURE}, keyBytes, nil)
+		glog.Info("Request signature failed")
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BAD_SIGNATURE}, keyBytes)
 		return
 	}
 
@@ -230,7 +247,8 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		// We don't differentiate between a problem with the OTP (unknown,
 		// corrupt) and a problem with the KSM itself (down, db error)
 		// The PHP version assumes the KSM is fine and the OTP is broken, so that's what we do too.
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BAD_OTP}, keyBytes, err)
+		glog.Error("Error talking to KSM: ", err)
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BAD_OTP}, keyBytes)
 		return
 	}
 
@@ -241,6 +259,7 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 
 	err = ykey.Load(YubiDB, publicName)
 	if err == sql.ErrNoRows {
+		glog.Info("Unknown Yubikey '", publicName, "' -- creating")
 		ykey.Active = true
 		ykey.PublicName = publicName
 		ykey.Counter = -1
@@ -249,30 +268,37 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		ykey.High = -1
 		ykey.Nonce = nonce
 		if err := ykey.Insert(YubiDB); err != nil {
-			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes, err)
+			glog.Errorf("DB error inserting yubikey='%s': %s", ykey.PublicName, err)
+			writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes)
 			return
 		}
 
 	} else if err != nil {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes, err)
+		glog.Errorf("DB error loading yubikey='%s': %s", publicName, err)
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes)
 		return
 	}
 
+	glog.Infof("Loaded yubikey=%#v", ykey)
+
 	if !ykey.Active {
 		// actually 'deactivated', but don't let the user know
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BAD_OTP}, keyBytes, fmt.Errorf("yubikey not active"))
+		glog.Info("Yubikey '", publicName, "' not active, rejecting")
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BAD_OTP}, keyBytes)
 		return
 	}
 
 	// Val X checks the OTP/Nonce against local database, and replies with REPLAYED_REQUEST if local information is identical.
 	if int(ksmResponse.Counter) == ykey.Counter && int(ksmResponse.Use) == ykey.Use && nonce == ykey.Nonce {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: REPLAYED_REQUEST}, keyBytes, nil)
+		glog.Warning("Replayed request")
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: REPLAYED_REQUEST}, keyBytes)
 		return
 	}
 
 	// Val X checks the OTP counters against local counters, and rejects OTP as replayed if local counters are higher than or equal to OTP counters.
 	if int(ksmResponse.Counter) < ykey.Counter || int(ksmResponse.Counter) == ykey.Counter && int(ksmResponse.Use) <= ykey.Use {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: REPLAYED_OTP}, keyBytes, nil)
+		glog.Warning("Replayed OTP: local counters higher") // FIXME: log actual counter values?
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: REPLAYED_OTP}, keyBytes)
 		return
 	}
 
@@ -284,7 +310,8 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 	ykey.Nonce = nonce
 
 	if err := ykey.UpdateCounters(YubiDB); err != nil {
-		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes, fmt.Errorf("UPDATE failed: %s", err))
+		glog.Error("DB error updating counters: ", err)
+		writeResponse(w, &VerifyResponse{OTP: otp, Nonce: nonce, Status: BACKEND_ERROR}, keyBytes)
 		return
 	}
 
@@ -314,7 +341,7 @@ func verifyHandler(w http.ResponseWriter, r *http.Request) {
 		response.Timestamp = uint(ksmResponse.TstampHigh)<<16 + uint(ksmResponse.TstampLow)
 	}
 
-	writeResponse(w, response, keyBytes, nil)
+	writeResponse(w, response, keyBytes)
 
 	/*
 	 * Val X marks the remaining entries in the sync queue as marked with timestamp=NULL.
@@ -327,13 +354,13 @@ func main() {
 	flag.Parse()
 
 	if *dbfile == "" {
-		log.Fatalf("No database provided (-db)")
+		glog.Fatalf("No database provided (-db)")
 	}
 
 	var err error
 	YubiDB, err = sql.Open("sqlite3", *dbfile)
 	if err != nil {
-		log.Fatalf("can't open sqlite3://%s: %s\n", *dbfile, err)
+		glog.Fatalf("can't open sqlite3://%s: %s\n", *dbfile, err)
 	}
 
 	http.HandleFunc("/wsapi/2.0/verify", verifyHandler)
@@ -342,6 +369,6 @@ func main() {
 	if p := os.Getenv("PORT"); p != "" {
 		port = ":" + p
 	}
-	log.Println("listening on port", port)
-	log.Fatal(http.ListenAndServe(port, nil))
+	glog.Info("listening on port", port)
+	glog.Fatal(http.ListenAndServe(port, nil))
 }
