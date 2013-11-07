@@ -34,11 +34,7 @@ func decryptHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	idlen := len(otp) - 32
-
-	yid, yctxt := otp[:idlen], otp[idlen:]
-
-	yotp := yubikey.NewOtp(yctxt)
+	pubid, yotp, err := yubikey.ParseOTPString(otp)
 
 	stmt, err := KeysDB.Prepare("SELECT aeskey, internalname FROM yubikeys WHERE publicname = ? AND active = 1")
 	if err != nil {
@@ -49,10 +45,10 @@ func decryptHandler(w http.ResponseWriter, r *http.Request) {
 	defer stmt.Close()
 	var aeskeyHex string
 	var name string
-	err = stmt.QueryRow(yid).Scan(&aeskeyHex, &name)
+	err = stmt.QueryRow(string(pubid)).Scan(&aeskeyHex, &name)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			glog.Info("ERR Unknown yubikey: ", yid)
+			glog.Info("ERR Unknown yubikey: ", string(pubid))
 			http.Error(w, "ERR Unknown yubikey", http.StatusOK)
 		} else {
 			glog.Error("ERR DB error during SELECT: ", err)
