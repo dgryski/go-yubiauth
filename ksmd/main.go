@@ -6,29 +6,43 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/hex"
+	"expvar"
 	"flag"
 	"fmt"
+	"net/http"
+	"os"
+
 	"github.com/conformal/yubikey"
 	"github.com/golang/glog"
 	_ "github.com/mattn/go-sqlite3"
-	"net/http"
-	"os"
 )
+
+var Metrics = struct {
+	Requests *expvar.Int
+	Errors   *expvar.Int
+}{
+	Requests: expvar.NewInt("requests"),
+	Errors:   expvar.NewInt("errors"),
+}
 
 var KeysDB *sql.DB
 
 func decryptHandler(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 
+	Metrics.Requests.Add(1)
+
 	otp := r.FormValue("otp")
 
 	if otp == "" {
+		Metrics.Errors.Add(1)
 		glog.Info("ERR No OTP provided")
 		http.Error(w, "ERR No OTP provided", http.StatusOK)
 		return
 	}
 
 	if len(otp) < 32 || len(otp) > 48 || !yubikey.ModHexP([]byte(otp)) {
+		Metrics.Errors.Add(1)
 		glog.Info("ERR Invalid OTP format: ", otp)
 		http.Error(w, "ERR Invalid OTP format", http.StatusOK)
 		return
@@ -38,6 +52,7 @@ func decryptHandler(w http.ResponseWriter, r *http.Request) {
 
 	stmt, err := KeysDB.Prepare("SELECT aeskey, internalname FROM yubikeys WHERE publicname = ? AND active = 1")
 	if err != nil {
+		Metrics.Errors.Add(1)
 		glog.Error("ERR DB error during Prepare(): ", err)
 		http.Error(w, "ERR Database error", http.StatusOK)
 		return
@@ -47,6 +62,7 @@ func decryptHandler(w http.ResponseWriter, r *http.Request) {
 	var name string
 	err = stmt.QueryRow(string(pubid)).Scan(&aeskeyHex, &name)
 	if err != nil {
+		Metrics.Errors.Add(1)
 		if err == sql.ErrNoRows {
 			glog.Info("ERR Unknown yubikey: ", string(pubid))
 			http.Error(w, "ERR Unknown yubikey", http.StatusOK)
@@ -63,6 +79,7 @@ func decryptHandler(w http.ResponseWriter, r *http.Request) {
 
 	token, err := yotp.Parse(aesKey)
 	if err != nil {
+		Metrics.Errors.Add(1)
 		glog.Info("ERR Corrupt OTP (Parse failed): ", otp)
 		http.Error(w, "ERR Corrupt OTP", http.StatusOK)
 		return
@@ -71,6 +88,7 @@ func decryptHandler(w http.ResponseWriter, r *http.Request) {
 	nameBytes, _ /* err */ := hex.DecodeString(name) // error ignored, we trust the database
 
 	if !bytes.Equal(nameBytes, token.Uid[:]) {
+		Metrics.Errors.Add(1)
 		glog.Warning("ERR Corrupt OTP (UID mismatch): ", otp)
 		http.Error(w, "ERR Corrupt OTP", http.StatusOK)
 		return
